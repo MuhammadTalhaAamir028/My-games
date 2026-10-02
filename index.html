@@ -1,0 +1,148 @@
+<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Our Games</title>
+<style>
+  body{font-family:system-ui;max-width:680px;margin:0 auto;padding:12px;background:#0f3d2e;color:#eee}
+  button,input{font-size:1rem;padding:10px 14px;margin:3px;border-radius:8px;border:0}
+  button{background:#f4c542;font-weight:600} button:disabled{opacity:.4}
+  input[type=number]{width:5em}
+  .p{display:flex;justify-content:space-between;align-items:center;padding:6px 10px;border-radius:8px;background:#0a2a1f;margin:3px 0}
+  .p.turn{outline:2px solid #f4c542} .p.out{opacity:.4}
+  .card{display:inline-block;background:#fff;color:#111;border-radius:6px;padding:8px 6px;margin:2px;font-size:1.2rem;min-width:2.1em;text-align:center;cursor:default}
+  .card.red{color:#c00} .card.back{background:#274;color:#274}
+  .card.sel{outline:3px solid #f4c542;transform:translateY(-8px)} .card.dim{opacity:.5}
+  .pile{background:#0a2a1f;border-radius:10px;padding:10px;margin:8px 0;text-align:center}
+  .stats{display:flex;gap:8px;margin:8px 0}
+  .stats div{flex:1;background:#0a2a1f;border-radius:10px;padding:8px;text-align:center}
+  .stats b{font-size:1.6rem}
+  small{opacity:.7}
+  #bar{min-height:2.4em}
+  #err{display:none;position:fixed;top:10px;left:10px;right:10px;z-index:9;background:#b33;color:#fff;padding:14px;border-radius:10px;font-weight:600;box-shadow:0 4px 12px #0008}
+</style>
+<div id="bar"></div><div id="app"></div><div id="err"></div>
+<script>
+const $ = id => document.getElementById(id), app = $("app");
+const esc = s => String(s).replace(/[&<>"']/g, c => "&#" + c.charCodeAt(0) + ";");
+let ws = null, S = null, sel = {src: "", idx: []}, handKey = "", sess = null, lastMsg = 0, tt, rt;
+try { sess = JSON.parse(localStorage.getItem("sess")); } catch {}
+const store = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, typeof v == "string" ? v : JSON.stringify(v)); } catch {} };
+const send = o => ws && ws.readyState == 1 && ws.send(JSON.stringify(o));
+function toast(m) { const e = $("err"); e.textContent = m; e.style.display = "block"; clearTimeout(tt); tt = setTimeout(() => e.style.display = "none", 5000); }
+
+function connect() {
+  if (ws && ws.readyState <= 1) return;
+  const w = ws = new WebSocket(`${location.protocol == "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  w.onopen = () => { if (sess) send({t: "resume", ...sess}); renderBar(); };
+  w.onclose = () => { renderBar(); setTimeout(connect, 1500); };
+  w.onmessage = e => {
+    lastMsg = Date.now();
+    const d = JSON.parse(e.data);
+    if (d.t == "err") return toast(d.m);
+    if (d.t == "expired" || d.t == "left") { S = null; sess = null; store("sess", null); return render(); }
+    S = d; sess = {pid: d.me, room: d.room}; store("sess", sess);
+    const k = d.game ? JSON.stringify([d.game.hand, d.game.round]) : "";
+    if (k != handKey) { handKey = k; sel = {src: "", idx: []}; }  // hand changed, old selection is stale
+    render();
+  };
+}
+document.addEventListener("visibilitychange", () => {  // phone tabbed back in: resync, reconnect if the socket went stale
+  if (document.hidden) return;
+  if (!ws || ws.readyState > 1) return connect();
+  const t0 = Date.now(); send({t: "sync"});
+  setTimeout(() => { if (lastMsg < t0) { try { ws.close(); } catch {} ws = null; connect(); } }, 3000);
+});
+window.refresh = () => { if (ws && ws.readyState == 1) send({t: "sync"}); else { ws = null; connect(); } };
+window.leave = () => { if (confirm("Leave this room?")) send({t: "leave"}); };
+window.act = (a, extra) => { send({t: "act", a, ...extra}); sel = {src: "", idx: []}; };
+window.joinRoom = code => {
+  const name = $("pname").value.trim(), room = (code || $("rcode").value).trim();
+  if (!name) return toast("Enter your name first");
+  if (!room) return toast("Enter a room code, or tap an open room below");
+  store("name", name);
+  send({t: "join", name, room});
+};
+window.pick = (src, i, rank) => {
+  if (sel.src != src) sel = {src, idx: []};
+  const arr = src == "hand" ? S.game.hand : S.game.me_up;
+  if (sel.idx.includes(i)) sel.idx = sel.idx.filter(x => x != i);
+  else { if (rank != 2) sel.idx = sel.idx.filter(x => arr[x][0] == 2 || arr[x][0] == rank); sel.idx.push(i); }  // 2s mix with anything
+  render();
+};
+
+async function pollRooms() {
+  clearTimeout(rt);
+  if (S) return;
+  try {
+    const l = await (await fetch("/rooms")).json(), el = $("rooms");
+    if (el) el.innerHTML = l.length ? l.map(r => `<div class="p"><span>${esc(r.code)} · ${r.kind || "lobby"} · ${r.n} player${r.n == 1 ? "" : "s"}<br><small>host ${esc(r.host)}</small></span>
+      ${r.started ? "<small>in progress</small>" : `<button onclick="joinRoom(this.dataset.c)" data-c="${esc(r.code)}">Join</button>`}</div>`).join("") : "<small>No open rooms yet. Create one above.</small>";
+  } catch {}
+  rt = setTimeout(pollRooms, 3000);
+}
+
+function renderBar() {
+  const on = ws && ws.readyState == 1;
+  $("bar").innerHTML = (on ? "" : "<b>⚠ reconnecting…</b> ") + (S ? `<button onclick="refresh()">🔄 Refresh</button><button onclick="leave()">Leave room</button>` : "");
+}
+
+function render() {
+  renderBar();
+  if (!S) {
+    app.innerHTML = `<h2>Our Games</h2>
+      <input id="pname" placeholder="Your name" maxlength="16"><input id="rcode" placeholder="Room code"><br>
+      <button onclick="joinRoom()">Join / create room</button>
+      <h3>Open rooms</h3><div id="rooms"><small>Loading…</small></div>`;
+    try { $("pname").value = localStorage.getItem("name") || ""; } catch {}
+    return pollRooms();
+  }
+  const host = S.me == S.host;
+  if (!S.game) return app.innerHTML = `<h2>Room: ${esc(S.room)}</h2>
+    ${Object.entries(S.names).map(([p, n]) => `<div class="p"><span>${esc(n)}${p == S.me ? " (you)" : ""}${p == S.host ? " 👑" : ""}</span>${S.off.includes(p) ? "<small>offline</small>" : ""}</div>`).join("")}
+    ${host ? `<p>Rounds (0 = play until I end it): <input id="rounds" type="number" min="0" max="50" value="3"></p>
+      ${S.games.map(g => `<button onclick="send({t:'start',game:'${g}',rounds:$('rounds').value})">Start ${g}</button>`).join("")}`
+      : "<p>Waiting for host to start…</p>"}
+    <h3>Leaderboard</h3>
+    ${Object.entries(S.lb).map(([g, t]) => `<b>${esc(g)}</b>` + Object.entries(t).sort((a, b) => b[1] - a[1]).map(([n, w]) => `<div class="p"><span>${esc(n)}</span><span>${w} wins</span></div>`).join("")).join("") || "<small>No wins yet</small>"}`;
+  app.innerHTML = (VIEWS[S.kind] || (() => "?"))(S.game, S.me, host);
+}
+
+const R = {11:"J",12:"Q",13:"K",14:"A"}, SU = {S:"♠",H:"♥",D:"♦",C:"♣"};
+const card = (c, cls = "", click = "") => c
+  ? `<span class="card ${"HD".includes(c[1]) ? "red" : ""} ${cls}" ${click ? `onclick="${click}"` : ""}>${R[c[0]] || c[0]}${SU[c[1]]}</span>`
+  : `<span class="card back">??</span>`;
+
+const VIEWS = {
+  teenpatti(g, me, host) {
+    const mine = g.turn == me, ok = new Set(g.ok);
+    const you = g.players.find(p => p.id == me);
+    g.me_up = you ? you.up : [];
+    const cs = (cards, src, usable) => {
+      const two = sel.src == src && sel.idx.some(x => cards[x][0] == 2);  // a selected 2 lets any card go
+      return cards.map((c, i) => card(c, `${sel.src == src && sel.idx.includes(i) ? "sel" : ""} ${mine && usable && (ok.has(c[0]) || two) ? "" : "dim"}`,
+        mine && usable ? `pick('${src}',${i},${c[0]})` : "")).join("");
+    };
+    const picked = sel.src && sel.idx.length;
+    return `<h3>Teen Patti — round ${g.round}${g.rounds ? "/" + g.rounds : ""}</h3>
+      <div class="stats"><div><b>${g.deck_n}</b><br><small>Deck left</small></div><div><b>${g.pile_n}</b><br><small>In pile</small></div><div><b>${g.burned}</b><br><small>Burned</small></div></div>
+      ${g.players.map(p => `<div class="p ${p.id == g.turn ? "turn" : ""} ${p.out ? "out" : ""}">
+        <span>${esc(p.name)}${p.id == me ? " (you)" : ""} · ${p.score} pts${S.off.includes(p.id) ? " ⚠ offline" : ""}<br><small>hand ${p.hand} · face-down ${p.down}</small></span>
+        <span>${p.id == me ? "" : p.up.map(c => card(c)).join("")}</span></div>`).join("")}
+      <div class="pile">Pile: ${g.pile.length ? g.pile.map(c => card(c)).join("") : "<small>empty</small>"}
+        <br><small>${esc(g.log)}</small></div>
+      ${g.phase == "play" && you && !you.out ? `
+        <div>Hand: ${cs(g.hand, "hand", true) || "<small>none</small>"}</div>
+        <div>Face-up: ${cs(you.up, "up", g.canup)} ${g.canup ? "" : "<small>(unlocks when deck is empty and hand &lt; 2)</small>"}</div>
+        <div>Face-down: ${"<span class='card back'>??</span>".repeat(you.down)}</div>
+        <small>Tip: select a 2 plus any other card to play them together.</small><br>
+        <button onclick="act('play',{src:sel.src,idx:sel.idx})" ${mine && picked ? "" : "disabled"}>Play selected</button>
+        <button onclick="act('down')" ${mine && g.candown ? "" : "disabled"}>Flip face-down</button>` : ""}
+      ${g.phase != "play" ? `<p><b>${esc(g.result)}</b></p>` : ""}
+      ${g.phase == "round_end" ? `<button onclick="act('next')">Next round</button>` : ""}
+      ${host && g.phase != "over" ? `<button onclick="if(confirm('End game now?'))send({t:'end'})">End game</button>` : ""}
+      ${host && g.phase == "over" ? `<button onclick="send({t:'lobby'})">Back to lobby</button>` : ""}
+      ${!host && g.phase == "over" ? "<p><small>Waiting for the host to go back to the lobby.</small></p>" : ""}`;
+  },
+};
+render();
+connect();
+</script>
